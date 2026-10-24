@@ -8,12 +8,12 @@ Built and tested on Apple Silicon Macs. It should also run on Linux and Windows 
 
 ### As a Mac app (recommended)
 
-1. Download or clone this repository, open Terminal in its folder and run `./macos/build_app.sh`. This makes **Linework.app** in the `dist` folder.
-2. Drag **Linework.app** into **Applications**, and from there into the Dock if you like.
-3. Open it. The first start sets everything up (a few minutes, about 1 GB); a message says so and the window opens by itself when it is done. Later starts take a few seconds.
+1. Download **Linework-…-mac.zip** from the [latest release](https://github.com/maxzimmermnn/linework/releases/latest) and double-click it. (Or build the app yourself: `./macos/build_app.sh` in this folder makes it in `dist`.)
+2. Drag **Linework** into **Applications**, and from there into the Dock if you like.
+3. Open it. macOS asks you to confirm once because the app isn't registered with Apple: **System Settings › Privacy & Security › Open Anyway** (on older macOS: Control-click the app, **Open**, **Open**). The first start sets everything up (a few minutes, about 1 GB); a message says so and the window opens by itself when it is done. Later starts take a few seconds.
 4. Quit with **Cmd+Q** or by closing the window.
 
-Drawings are saved to **Pictures › Linework**. If you copy the app to another Mac, macOS may say it can't verify it: Control-click the app, choose **Open**, then **Open** again (on macOS 15 and later: **System Settings › Privacy & Security › Open Anyway**). Only needed the first time.
+Drawings are saved to **Pictures › Linework**.
 
 To remove it completely, delete the app and the folder `~/Library/Application Support/Linework` (Python, models, presets, about 1 GB).
 
