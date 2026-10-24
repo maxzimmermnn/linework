@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -18,6 +19,8 @@ try:  # iPhone HEIC support, optional
     register_heif_opener()
 except Exception:
     pass
+
+IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp", ".heic", ".heif"}
 
 # Parameters that change the model output (anything else is post-processing).
 DETECT_KEYS = ("model", "detail", "texture_smoothing", "local_contrast", "canny_low", "canny_high")
@@ -75,10 +78,12 @@ def prepare_input(rgb: np.ndarray, p: dict) -> np.ndarray:
 
 
 class EdgeCache:
-    """Small LRU so moving post-processing sliders never re-runs the model."""
+    """Small LRU so moving post-processing sliders never re-runs the model. Bounded by entries
+    and by bytes: one edge map at Detail 4096 is ~80 MB."""
 
-    def __init__(self, size: int = 12):
+    def __init__(self, size: int = 12, max_bytes: int | None = None):
         self.size = size
+        self.max_bytes = max_bytes if max_bytes is not None else int(registry.MEMORY_GB * 2**30 / 32)
         self.data: OrderedDict = OrderedDict()
 
     def key(self, image_id: str, p: dict) -> str:
@@ -95,7 +100,9 @@ class EdgeCache:
     def put(self, k, v):
         self.data[k] = v
         self.data.move_to_end(k)
-        while len(self.data) > self.size:
+        while len(self.data) > 1 and (
+            len(self.data) > self.size or sum(a.nbytes for a in self.data.values()) > self.max_bytes
+        ):
             self.data.popitem(last=False)
 
 
@@ -107,16 +114,20 @@ def image_id(rgb: np.ndarray) -> str:
     return hashlib.sha1(small.tobytes() + str(rgb.shape).encode()).hexdigest()
 
 
+_LOCK = threading.Lock()  # the UI and the watch folder thread share the model and the cache
+
+
 def detect(rgb: np.ndarray, p: dict, progress=None, img_id: str | None = None) -> np.ndarray:
     """Returns float32 edge map at detail resolution (0..1, 1 = line)."""
     k = CACHE.key(img_id or image_id(rgb), p)
-    hit = CACHE.get(k)
-    if hit is not None:
-        return hit
-    x = prepare_input(rgb, p)
-    edges = registry.run_model(p["model"], x, p, progress)
-    CACHE.put(k, edges)
-    return edges
+    with _LOCK:
+        hit = CACHE.get(k)
+        if hit is not None:
+            return hit
+        x = prepare_input(rgb, p)
+        edges = registry.run_model(p["model"], x, p, progress)
+        CACHE.put(k, edges)
+        return edges
 
 
 def output_name(src: str | Path | None, model: str) -> str:

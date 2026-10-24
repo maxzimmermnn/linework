@@ -22,6 +22,7 @@ If a Linework instance is already running on 7860, Gradio picks the next free po
 
 - Stage 1 (`detect.py`) is cached on `DETECT_KEYS`; a param outside that tuple must never change the model output.
 - New parameter: `postprocess.DEFAULTS` + `PARAM_KEYS` and `controls` in `app.py`, same order (assert checks the length).
+- Memory limits (tiling threshold, Detail max, cache, streaming piece size) derive from `registry.MEMORY_GB`; test small-Mac behaviour with `LINEWORK_MEMORY_GB=16`. Networks run in half precision on MPS: new models must work with `.half()`.
 - Tiled inference (`registry._infer_tiled`, `_lineart_streamed`) must stay pixel-identical to the untiled run: 64-aligned tile offsets, edge margins dropped, whole-image normalisation (`_lift_haze`, InstanceNorm) after stitching or over the full activation.
 - UI copy: plain words for an artist, no em dashes. Never overwrite user files. No network access besides the model download, `share=False`, bound to 127.0.0.1.
 - New models or vendored code: record the license in `THIRD_PARTY_NOTICES.md`.

@@ -18,7 +18,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 .venv/bin/python -m linework.cli photo.jpg --psd  # CLI, see linework/cli.py for options
 ```
 
-Env vars: `LINEWORK_DEVICE` (force `cpu`/`mps`/`cuda`), `LINEWORK_WEIGHTS` (weights folder), `LINEWORK_OUTPUT` (output folder), `LINEWORK_PRESETS` (user presets folder), `LINEWORK_NO_BROWSER=1`, `LINEWORK_ICON` (window/Dock icon in desktop mode).
+Env vars: `LINEWORK_DEVICE` (force `cpu`/`mps`/`cuda`), `LINEWORK_PRECISION=full` (float32 on Apple GPUs), `LINEWORK_MEMORY_GB` (act like a Mac with that much RAM; tiling, Detail limit and cache follow it), `LINEWORK_WEIGHTS` (weights folder), `LINEWORK_OUTPUT` (output folder), `LINEWORK_PRESETS` (user presets folder), `LINEWORK_NO_BROWSER=1`, `LINEWORK_ICON` (window/Dock icon in desktop mode).
 
 ## Layout
 
@@ -31,6 +31,7 @@ linework/
   postprocess.py           Stage 2: levels, styles, despeckle, weight, smoothing, compose. DEFAULTS live here
   export.py                writes PNG / SVG / PSD with never-overwrite naming; used by app, batch and CLI
   vector.py                SVG export (traces the stage 2 ink map)
+  watch.py                 watch folder: polls a folder, draws new photos next to them (UI and cli --watch)
   layered.py               Layered PSD export
   presets.py               Built-in presets + user presets in ./presets/*.json
   desktop.py               native window (pywebview) around the UI, used by the app bundle
@@ -54,15 +55,27 @@ All pixel-valued sliders are in detail-resolution pixels, so preview and export 
 
 Model outputs are normalised so one set of defaults works everywhere: Lineart networks draw 1 = paper, so `_infer` inverts them; TEED, Anyline and HED leave a grey haze that `_lift_haze` removes (5th percentile floor).
 
+### Memory and speed on smaller Macs
+
+The target includes 16 GB machines (MacBook Air class, 8-10 GPU cores). On Apple Silicon the GPU shares RAM with macOS and every other app, so all limits derive from installed RAM (`registry.MEMORY_GB`):
+
+- **Half precision** on MPS (`registry.HALF`): networks run in float16. 2-3x less GPU memory (Lineart at Detail 2048: 8.7 -> 2.9 GB, PiDiNet 10.1 -> 4.8 GB) and 15-40% faster; stylized output matches float32 at IoU >= 0.997 for every model. Whole-network `.half()` beats `torch.autocast` here: autocast keeps InstanceNorm in float32 and made Lineart use *more* memory. PiDiNet's `rd` conv needed a dtype fix. CPU (and the CPU fallback) stays float32.
+- **Tiling threshold** `TILE_ABOVE` = what a quarter of RAM holds at ~0.9 GB/MP: 4.4 MP (Detail ~1900) on 16 GB, capped at 9 MP from 32 GB. `MAX_DETAIL` (the slider limit) is 3072 below 24 GB: Lineart at 4096 needs ~9 GB there.
+- **Streamed Lineart** keeps activations in half precision, normalises 8 channels at a time in float32, uses 512 px pieces and empties the MPS cache after each layer on < 32 GB: Detail 3072 peaks at 4.9 GB instead of 7.4 GB for ~20% more time.
+- `torch.mps.empty_cache()` after every model run hands cached GPU memory back to macOS (otherwise PyTorch keeps several GB).
+- The edge cache is bounded by bytes (RAM/32) as well as entries.
+- **Preview styling** runs at about display size instead of the export's 2x (`stylize(..., scale)`): 4-7x less work per slider move at high Detail. Pen and Hard strokes change look at low scale (Pen at 1x is 16% lighter), so they keep a minimum scale (Pen 1.5, Hard 1.25); the preview's ink is then within 4% of the export.
+
+Measured on an M1 Max with `LINEWORK_MEMORY_GB=16`: Lineart preview at Detail 1024 in 1 s, 2048 in 5 s, 3072 in 11 s; slider moves afterwards 0.5-1.3 s; server footprint ~4-5 GB at 3072. An M3 Air's GPU has roughly a third of that GPU's cores, so model runs take longer there; styling is CPU-bound and similar. Not yet measured on a real 16 GB machine.
+
 ### Large images (tiling)
 
-Untiled MPS inference needs about 1.5-2 GB per megapixel the model sees. Above `registry.TILE_ABOVE` (9 MP, beyond detail ~2560 on a typical photo) models run in pieces, and the result is identical to the untiled run:
+Above `registry.TILE_ABOVE` (see above) models run in pieces, and the result is identical to the untiled run (half precision: Lineart IoU 0.999, the others exact):
 
 - `_infer_tiled`: overlapping 1536 px tiles. Tile offsets must be multiples of 64 (the networks' downsampling grid; an unaligned tile differs everywhere, not just at its edges). Output within 192 px of a cut edge is wrong for lack of context (PiDiNet worst, HED 128, Lineart 64) and gets zero weight; neighbours crossfade over 64 px.
 - Lineart uses InstanceNorm over the whole image, so tiles cannot be normalised independently, and statistics from a downscaled pass made drawings ~25% lighter. `_lineart_streamed` runs it layer by layer instead: each convolution is computed tile by tile on the GPU, full activations live in RAM, every norm sees the whole image.
 - `_lift_haze` runs after stitching, never per tile.
 
-Detail 4096 on a 19 MP photo: Lineart ~15 s, ~6 GB GPU, ~11 GB RAM. Pen styling at that size is ~5 s per slider move (skeletonize on an 82 MP map).
 
 ### Exports
 
@@ -73,6 +86,10 @@ All formats go through `export.save()`, which picks a free file name (time suffi
 - **PSD** (`layered.py`, psd-tools): Photo, hidden white Paper, transparent Lines; photo's ppi and ICC profile carried over. psd-tools stores layer alpha as a layer *mask* unless the document is RGBA, so the PSD is built as RGBA and the header is set back to 3 channels before saving (otherwise Photoshop shows an "Alpha 1" channel).
 
 Both were checked in Photoshop 2026 (layer structure, resolution, profile; the placed SVG lands on the PSD's Lines layer pixel for pixel). With Photoshop installed, exports can be inspected headlessly via ExtendScript: `osascript -e 'tell application "Adobe Photoshop 2026" to do javascript (read POSIX file "check.jsx")'`. Setting `activeLayer` to a hidden layer from a script makes it visible.
+
+### Watch folder
+
+`watch.Watcher` polls every 2 s (no extra dependency, works on network drives). A photo counts once its size and mtime are unchanged between two polls, so files still being copied are skipped; photos present at start and our own `*_lines_*` outputs are never processed. Settings are a snapshot taken at Start. The watcher thread and the UI share the model and the edge cache, so `detect.detect` runs under a lock.
 
 ## Mac app
 
@@ -95,12 +112,11 @@ Checked on this setup: first start from scratch, relaunch after setup, Dock iden
 
 ## Status
 
-Verified on an Apple Silicon Mac: all six downloadable models load and run on MPS; tiled output is identical to untiled for every model; PNG/SVG/PSD export from the UI, Batch and CLI; PSD and SVG in Photoshop 2026.
+Verified on an Apple Silicon Mac: all six downloadable models load and run on MPS; tiled output is identical to untiled for every model; PNG/SVG/PSD export from the UI, Batch and CLI; the watch folder in the UI, the app (writing to `~/Pictures`) and the CLI; PSD and SVG in Photoshop 2026.
 
 Not verified: `start.command` on a clean machine (venv creation, Gatekeeper prompt); SVG in Illustrator; presets were tuned on small test images and still need tuning on real 20+ MP photos.
 
 ## Roadmap
 
 - Tune `presets.py` and `postprocess.DEFAULTS` on real photos, ideally against a hand-traced reference.
-- "Watch folder" mode: drop photos into a folder, drawings appear next to them.
 - Optional extra models (Lineart Anime, DexiNed, a manga line model) if a different look is needed.

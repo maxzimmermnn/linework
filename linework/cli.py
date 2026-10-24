@@ -5,18 +5,19 @@
     python -m linework.cli folder/ --model teed --detail 1280 --style hard --transparent
     python -m linework.cli photo.jpg --style pen --svg      # vector paths for Illustrator
     python -m linework.cli photo.jpg --psd                  # photo + lines as Photoshop layers
+    python -m linework.cli --watch ~/Inbox --style hard     # draw every photo dropped into ~/Inbox
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
-from . import detect, export, postprocess, presets
+from . import detect, export, postprocess, presets, watch
 from .models import registry
 
-IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp", ".heic", ".heif"}
 
 
 def expand(inputs: list[str]) -> list[Path]:
@@ -24,7 +25,7 @@ def expand(inputs: list[str]) -> list[Path]:
     for s in inputs:
         p = Path(s).expanduser()
         if p.is_dir():
-            out += sorted(f for f in p.iterdir() if f.suffix.lower() in IMG_EXT)
+            out += sorted(f for f in p.iterdir() if f.suffix.lower() in detect.IMG_EXT)
         elif p.exists():
             out.append(p)
         else:
@@ -40,7 +41,8 @@ def process_file(path: Path, params: dict, out_dir: Path | None, fmt: str = "png
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Turn photos into black line drawings.")
-    ap.add_argument("inputs", nargs="+", help="image files or folders")
+    ap.add_argument("inputs", nargs="*", help="image files or folders")
+    ap.add_argument("--watch", metavar="FOLDER", help="keep running and draw every photo added to FOLDER, next to it")
     ap.add_argument("-o", "--out", help="output folder (default: next to each input)")
     ap.add_argument("--preset", help="preset name (see app) or path to a .json preset")
     ap.add_argument("--model", choices=list(registry.MODELS))
@@ -69,6 +71,20 @@ def main(argv=None):
         export.check(fmt, params)
     except ValueError as e:
         ap.error(str(e))
+
+    if a.watch:
+        folder = Path(a.watch).expanduser()
+        folder.mkdir(parents=True, exist_ok=True)
+        w = watch.Watcher(folder, params, fmt).start()
+        print(f"Watching {folder} (model={params['model']}, {fmt}). Ctrl+C to stop.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            w.stop()
+        return
+    if not a.inputs:
+        ap.error("give image files or folders, or --watch FOLDER")
 
     files = expand(a.inputs)
     out_dir = Path(a.out).expanduser() if a.out else None

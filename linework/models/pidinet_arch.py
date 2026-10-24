@@ -5,6 +5,7 @@ Date: Feb 18, 2021
 Vendored from huggingface/controlnet_aux (Apache-2.0); original: github.com/hellozhuo/pidinet,
 "just for research purpose, commercial use should be contacted with authors first".
 See THIRD_PARTY_NOTICES.md and licenses/PiDiNet.txt.
+Modified for Linework: the rd_conv buffer follows the weights' dtype (half precision).
 """
 
 import math
@@ -334,7 +335,7 @@ def createConvFunc(op_type):
             padding = 2 * dilation
 
             shape = weights.shape
-            buffer = torch.zeros(shape[0], shape[1], 5 * 5).to(weights.device)
+            buffer = torch.zeros(shape[0], shape[1], 5 * 5, dtype=weights.dtype, device=weights.device)
             weights = weights.view(shape[0], shape[1], -1)
             buffer[:, :, [0, 2, 4, 10, 14, 20, 22, 24]] = weights[:, :, 1:]
             buffer[:, :, [6, 7, 8, 11, 13, 16, 17, 18]] = -weights[:, :, 1:]

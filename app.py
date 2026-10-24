@@ -16,7 +16,7 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
-from linework import detect, postprocess, presets
+from linework import detect, postprocess, presets, watch
 from linework import export as exporter
 from linework.models import registry
 
@@ -101,7 +101,12 @@ def preview(path, view, *values, progress=gr.Progress()):
     p = params_from(values)
     t0 = time.time()
     rgb, edges = _edges(path, p, progress)
-    ink = postprocess.stylize(edges, p)
+    # Style at about the displayed size instead of the export's 2x. Hard and especially Pen
+    # strokes change look at low scale (Pen at 1x is 16% lighter), so they keep a minimum;
+    # at these values the preview's ink is within 4% of the export.
+    min_scale = {"soft": 1.0, "hard": 1.25, "pen": 1.5}[p["style"]]
+    scale = min(postprocess.SUPERSAMPLE, max(min_scale, PREVIEW_MAX / max(edges.shape)))
+    ink = postprocess.stylize(edges, p, scale)
     img = _preview_image(rgb, ink, p, view)
     eh, ew = edges.shape
     info = (
@@ -156,14 +161,61 @@ def batch(files, fmt, *values, progress=gr.Progress()):
     return gr.update(value=str(zpath), visible=True), f"Done: {len(done)} drawings in **{folder.name}**."
 
 
-def open_output_folder():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def _reveal(folder: Path):
+    folder.mkdir(parents=True, exist_ok=True)
     opener = {"darwin": "open", "win32": "explorer"}.get(sys.platform, "xdg-open")
     try:
-        subprocess.Popen([opener, str(OUT_DIR)])
+        subprocess.Popen([opener, str(folder)])
     except Exception:
         pass
+
+
+def open_output_folder():
+    _reveal(OUT_DIR)
     return f"Output folder: `{OUT_DIR}`"
+
+
+WATCHER: watch.Watcher | None = None
+
+
+def _watch_folder(text) -> Path:
+    if not text or not text.strip():
+        raise gr.Error("Choose a folder to watch.")
+    return Path(text.strip()).expanduser()
+
+
+def watch_status():
+    w = WATCHER
+    if not w or not w.running:
+        return "Not watching."
+    s = f"Watching `{w.folder}` · {w.done} drawn" + (f" · {w.failed} failed" if w.failed else "")
+    return s + (f"  \n<small>Last: {w.last}</small>" if w.last else "")
+
+
+def start_watch(folder, fmt, *values):
+    global WATCHER
+    path = _watch_folder(folder)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        new = watch.Watcher(path, params_from(values), fmt, on_event=lambda m: print(f"[watch] {m}"))
+    except (OSError, ValueError) as e:
+        raise gr.Error(str(e)) from e
+    if WATCHER:
+        WATCHER.stop()
+    WATCHER = new.start()
+    return watch_status(), gr.Timer(active=True)
+
+
+def stop_watch():
+    if WATCHER:
+        WATCHER.stop()
+    return watch_status(), gr.Timer(active=False)
+
+
+def open_watch_folder(folder):
+    path = _watch_folder(folder)
+    _reveal(path)
+    return watch_status()
 
 
 def apply_preset(name):
@@ -200,7 +252,8 @@ CSS = """
    column's labels (z-index up to 40), else they show through the fullscreen preview. */
 .gradio-container {overflow: visible !important; overflow: clip !important}
 #result-col {position: sticky; top: 12px; align-self: flex-start; z-index: 50;
-             max-height: calc(100vh - 24px); overflow-y: auto}
+             max-height: calc(100vh - 24px); overflow-y: auto; flex-wrap: nowrap !important}
+#result-col > * {flex-shrink: 0}  /* with max-height, Gradio's wrapping column put Batch off to the right */
 #preview:not(.fullscreen) {height: max(320px, calc(100vh - 300px)) !important}
 #result-file {min-height: 0}
 .small-note {opacity: .75}
@@ -237,9 +290,9 @@ def build():
                     preset = gr.Dropdown(presets.names(), value="Default", label="Preset", scale=3)
                 model = gr.Dropdown(MODEL_CHOICES, value=D["model"], label="Model")
                 note = gr.Markdown(model_note(D["model"]), elem_classes="small-note")
-                detail = gr.Slider(256, 4096, D["detail"], step=64, label="Detail",
+                detail = gr.Slider(256, registry.MAX_DETAIL, D["detail"], step=64, label="Detail",
                                    info="Resolution the model looks at. Higher = finer, more lines. Lower = bolder, simpler. "
-                                        "Above about 2500 each change takes several seconds.")
+                                        "High values take several seconds per change.")
 
                 with gr.Accordion("Lines", open=True):
                     faint_cutoff = gr.Slider(0, 0.9, D["faint_cutoff"], step=0.01, label="Ignore faint lines",
@@ -303,6 +356,19 @@ def build():
                                           ("SVG (Hard and Pen ink styles)", "svg")], value="png", label="Save as")
                     batch_btn = gr.Button("Process all")
                     batch_out = gr.File(label="Zip of all drawings", interactive=False, visible=False)
+                with gr.Accordion("Watch a folder: new photos are drawn automatically", open=False):
+                    watch_dir = gr.Textbox(str(OUT_DIR / "Inbox"), label="Folder",
+                                           info="Drop photos into this folder while Linework is open. Each drawing is "
+                                                "saved next to its photo, with the settings you have when you press "
+                                                "Start. Press Start again to use new settings.")
+                    watch_fmt = gr.Radio([("PNG", "png"), ("PSD (photo + lines)", "psd"),
+                                          ("SVG (Hard and Pen ink styles)", "svg")], value="png", label="Save as")
+                    with gr.Row():
+                        watch_btn = gr.Button("Start", scale=2)
+                        unwatch_btn = gr.Button("Stop", scale=1)
+                        watch_open_btn = gr.Button("Open folder", scale=1)
+                    watch_info = gr.Markdown("Not watching.")
+                    watch_timer = gr.Timer(2.0, active=False)
 
         controls = [model, detail, texture_smoothing, local_contrast, canny_low, canny_high,
                     faint_cutoff, solid_at, darkness, style, threshold, close_gaps, despeckle,
@@ -323,6 +389,10 @@ def build():
         psd_btn.click(export_psd, [photo] + controls, [result_file, status])
         folder_btn.click(open_output_folder, None, status)
         batch_btn.click(batch, [batch_files, batch_fmt] + controls, [batch_out, status])
+        watch_btn.click(start_watch, [watch_dir, watch_fmt] + controls, [watch_info, watch_timer])
+        unwatch_btn.click(stop_watch, None, [watch_info, watch_timer])
+        watch_open_btn.click(open_watch_folder, watch_dir, watch_info)
+        watch_timer.tick(watch_status, None, watch_info)
     return demo
 
 

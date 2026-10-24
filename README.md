@@ -39,7 +39,7 @@ Tip: set **Output → Background → Transparent** and the PNG is just the lines
 | Control | What it does |
 |---|---|
 | **Model** | The "eye". Lineart = closest to hand inking. Coarse = bolder and simpler. Anyline/TEED = crisp thin contours. PiDiNet = only the main contours. HED = soft and painterly. Lineart standard / Canny = classic filters, no AI. |
-| **Detail** | How big the image is when the model looks at it. Higher = finer lines and more of them. Lower = fewer, bolder lines. The single most important slider. Goes up to 4096 for very large photos; above about 2500 it works in pieces and each change takes several seconds (Pen style is the slowest). |
+| **Detail** | How big the image is when the model looks at it. Higher = finer lines and more of them. Lower = fewer, bolder lines. The single most important slider. Goes up to 4096 for very large photos (3072 on Macs with less than 24 GB of memory); high values take several seconds per change. |
 | **Ignore faint lines** | Drops weak edges. Raise it when there is too much noise. |
 | **Fully black from** | Edges stronger than this become solid black. |
 | **Darken mid-tones** | Pushes grey lines darker (above 1) or lighter (below 1). |
@@ -58,12 +58,17 @@ Own presets: open **Save these settings as a preset**, give it a name. Saved as 
 
 Open **Batch** under the result, drop many photos, choose **Save as** (PNG, PSD or SVG), **Process all**. Uses the current settings. You get a folder plus a zip in `output`. Nothing is ever overwritten: if a name is taken, the new file gets the time added to its name.
 
-From Terminal:
+## Watch folder
+
+Open **Watch a folder** under the result, check the folder (in the app: **Pictures › Linework › Inbox**), choose **Save as** and press **Start**. From then on, every photo you drop into that folder while Linework is open gets drawn with the current settings, and the drawing appears next to the photo. Photos already in the folder are left alone. Changed the settings? Press **Start** again.
+
+From Terminal, both batch and watch folder work too:
 
 ```bash
 .venv/bin/python -m linework.cli ~/Shoot/*.jpg -o ~/Lines --preset "Clean outlines" --transparent
 .venv/bin/python -m linework.cli photo.jpg --style pen --svg     # vector instead of PNG
 .venv/bin/python -m linework.cli photo.jpg --psd                 # layered Photoshop file
+.venv/bin/python -m linework.cli --watch ~/Inbox --style hard    # draw every photo dropped into ~/Inbox
 ```
 
 ## Check everything works

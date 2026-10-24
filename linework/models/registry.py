@@ -107,6 +107,24 @@ def pick_device() -> torch.device:
 
 
 DEVICE = pick_device()
+# Half precision on Apple GPUs: 2-3x less memory and faster, drawings unchanged (IoU >= 0.997
+# against float32 for every model). CPU stays float32, half convolutions are slow there.
+HALF = DEVICE.type == "mps" and os.environ.get("LINEWORK_PRECISION", "half") != "full"
+
+
+def _memory_gb() -> float:
+    forced = os.environ.get("LINEWORK_MEMORY_GB")  # act like a Mac with this much RAM (testing)
+    if forced:
+        return float(forced)
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError, AttributeError):
+        return 16.0
+
+
+MEMORY_GB = _memory_gb()
+# Highest Detail the UI offers. Lineart above ~3000 holds several GB of activations in RAM.
+MAX_DETAIL = 4096 if MEMORY_GB >= 24 else 3072 if MEMORY_GB >= 12 else 2048
 
 
 # ---------------------------------------------------------------- download --
@@ -197,6 +215,8 @@ def load(key: str, progress=None) -> torch.nn.Module | None:
         else:
             raise KeyError(key)
         net = net.float().eval().to(DEVICE)
+        if HALF:
+            net = net.half()
         _loaded[key] = net
         return net
 
@@ -210,8 +230,12 @@ def _pad_to(img: np.ndarray, multiple: int):
     return img, h, w
 
 
-def _to_tensor(img: np.ndarray) -> torch.Tensor:
-    return torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1)))[None].float().to(DEVICE)
+def _dtype(net: torch.nn.Module) -> torch.dtype:
+    return next(net.parameters()).dtype
+
+
+def _to_tensor(img: np.ndarray, dtype=torch.float32) -> torch.Tensor:
+    return torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1)))[None].to(DEVICE, dtype)
 
 
 def _sigmoid_mean(outs, h, w) -> np.ndarray:
@@ -230,23 +254,26 @@ def _lift_haze(e: np.ndarray) -> np.ndarray:
 def _infer(key: str, net, rgb: np.ndarray) -> np.ndarray:
     """One network pass on rgb (uint8 HxWx3, any size) -> float32 HxW, 1 = line, before haze lifting."""
     img, h, w = _pad_to(rgb, 64)
+    dt = _dtype(net)
     if key in ("lineart", "lineart_coarse"):  # network draws white paper (1) with black ink (0)
-        out = net(_to_tensor(img) / 255.0)[0, 0].float().cpu().numpy()[:h, :w]
+        out = net(_to_tensor(img, dt) / 255.0)[0, 0].float().cpu().numpy()[:h, :w]
         return (1.0 - out).clip(0, 1).astype(np.float32)
     if key in ("hed", "teed", "anyline"):
-        return _sigmoid_mean(net(_to_tensor(img)), img.shape[0], img.shape[1])[:h, :w]
+        return _sigmoid_mean(net(_to_tensor(img, dt)), img.shape[0], img.shape[1])[:h, :w]
     if key == "pidinet":
-        out = net(_to_tensor(img[:, :, ::-1].copy()) / 255.0)[-1]  # BGR input
+        out = net(_to_tensor(img[:, :, ::-1].copy(), dt) / 255.0)[-1]  # BGR input
         return out[0, 0].float().cpu().numpy()[:h, :w].clip(0, 1).astype(np.float32)
     raise KeyError(key)
 
 
 # ------------------------------------------------------------------ tiling --
-# Above TILE_ABOVE pixels the model runs in pieces so GPU memory stays flat (untiled
-# MPS use is ~1.5-2 GB per megapixel). Everything up to detail 2560 on a typical photo
-# stays untiled. Both tiled paths reproduce the untiled result exactly (tests/test_pipeline.py).
-TILE_ABOVE = 9_000_000
-TILE = 1536
+# Above TILE_ABOVE pixels the model runs in pieces so memory stays flat. Untiled GPU use is
+# ~0.5-0.9 GB per megapixel in half precision (1.5-2 in float32), and the GPU shares RAM with
+# macOS and other apps, so tile above what a quarter of the RAM holds: ~4.4 MP (Detail ~1900)
+# on a 16 GB Mac, 9 MP (the cap, Detail ~2600) from 32 GB. Both tiled paths reproduce the
+# untiled result exactly (tests/test_pipeline.py).
+TILE_ABOVE = int(min(9.0, MEMORY_GB * 0.25 / (0.9 if HALF else 2.0)) * 1e6)
+TILE = 1536 if MEMORY_GB >= 12 else 1024
 MARGIN = 192   # tile output this close to a cut edge differs (too little context, PiDiNet worst): dropped
 OVERLAP = 448  # MARGIN dropped on each side + a 64 px crossfade; TILE - OVERLAP must be a multiple of 64
 
@@ -296,9 +323,12 @@ def _infer_tiled(key: str, net, rgb: np.ndarray, progress=None) -> np.ndarray:
 
 # Lineart normalises every layer over the whole image (InstanceNorm), so plain tiles
 # come out with different line density. Instead run it layer by layer: each convolution
-# is computed tile by tile on the GPU, the full-size activations live in RAM, and every
-# norm sees the whole image. Peak RAM at detail 4096 is roughly 10 GB.
-STREAM_TILE = 1024  # in each layer's own pixels
+# is computed tile by tile on the GPU, the full-size activations live in RAM (in the
+# network's precision, so half on Apple GPUs), and every norm sees the whole image.
+# Smaller pieces keep peak RAM down on 8-16 GB Macs (Detail 3072: 4.9 GB instead of 7.4 GB)
+# for ~20% more time.
+STREAM_TILE = 1024 if MEMORY_GB >= 32 else 512  # in each layer's own pixels
+NORM_CHANNELS = 16 if MEMORY_GB >= 32 else 8     # channels per float32 statistics chunk
 STREAM_HALO = 8     # context around a tile, enough for the 7x7 convs; must be even
 
 
@@ -311,29 +341,40 @@ def _conv_streamed(mod: torch.nn.Module, x: torch.Tensor, scale: float) -> torch
             y1, x1 = min(y0 + STREAM_TILE, h), min(x0 + STREAM_TILE, w)
             ys, xs = max(0, y0 - STREAM_HALO), max(0, x0 - STREAM_HALO)
             ye, xe = min(h, y1 + STREAM_HALO), min(w, x1 + STREAM_HALO)
-            t = mod(x[:, :, ys:ye, xs:xe].to(DEVICE)).float().cpu()
+            t = mod(x[:, :, ys:ye, xs:xe].to(DEVICE)).cpu()
             if out is None:
-                out = torch.empty((1, t.shape[1], int(h * scale), int(w * scale)), dtype=torch.float32)
+                out = torch.empty((1, t.shape[1], int(h * scale), int(w * scale)), dtype=t.dtype)
             oy, ox = int((y0 - ys) * scale), int((x0 - xs) * scale)
             th, tw = int((y1 - y0) * scale), int((x1 - x0) * scale)
             out[:, :, int(y0 * scale) : int(y0 * scale) + th, int(x0 * scale) : int(x0 * scale) + tw] = t[
                 :, :, oy : oy + th, ox : ox + tw
             ]
+    if DEVICE.type == "mps":
+        torch.mps.empty_cache()  # GPU memory counts against the same RAM as the activations
     return out
 
 
 def _norm_inplace(x: torch.Tensor, norm: torch.nn.InstanceNorm2d, relu: bool = True) -> torch.Tensor:
-    mean = x.mean(dim=(2, 3), keepdim=True)
-    var = x.var(dim=(2, 3), unbiased=False, keepdim=True)
-    x.sub_(mean).div_(torch.sqrt(var + norm.eps))
-    if norm.affine:
-        x.mul_(norm.weight.detach().cpu()[None, :, None, None]).add_(norm.bias.detach().cpu()[None, :, None, None])
-    return x.clamp_(min=0) if relu else x
+    # float32 statistics, a few channels at a time: exact sums, small temporary copies
+    k = NORM_CHANNELS
+    for c in range(0, x.shape[1], k):
+        xc = x[:, c : c + k]
+        f = xc.float()  # the same tensor when x is float32
+        var, mean = torch.var_mean(f, dim=(2, 3), unbiased=False, keepdim=True)
+        f.sub_(mean).div_(torch.sqrt(var + norm.eps))
+        if norm.affine:
+            f.mul_(norm.weight.detach().float().cpu()[None, c : c + k, None, None])
+            f.add_(norm.bias.detach().float().cpu()[None, c : c + k, None, None])
+        if relu:
+            f.clamp_(min=0)
+        if f.data_ptr() != xc.data_ptr():
+            xc.copy_(f)
+    return x
 
 
 def _lineart_streamed(net, rgb: np.ndarray, progress=None) -> np.ndarray:
     img, h, w = _pad_to(rgb, 64)  # same padding as the untiled run, so the norm statistics match
-    x = torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1)))[None].float() / 255.0
+    x = torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1)))[None].to(_dtype(net)) / 255.0
     steps, done = 12, 0
 
     def step(mod, x, scale):
@@ -354,7 +395,7 @@ def _lineart_streamed(net, rgb: np.ndarray, progress=None) -> np.ndarray:
         del y
     for i in (0, 3):  # two transposed convs back up to full size
         x = _norm_inplace(step(m3[i], x, 2), m3[i + 1])
-    out = step(net.model4, x, 1)[0, 0].numpy()[:h, :w]
+    out = step(net.model4, x, 1)[0, 0].float().numpy()[:h, :w]
     return (1.0 - out).clip(0, 1).astype(np.float32)
 
 
@@ -393,13 +434,16 @@ def run_model(key: str, rgb: np.ndarray, opts: dict | None = None, progress=None
     try:
         return _run(key, rgb, opts, progress)
     except RuntimeError as e:
-        # Rare MPS problems (unsupported op / out of memory): retry on CPU once.
-        global DEVICE
+        # Rare MPS problems (unsupported op / out of memory): retry on CPU once, in float32.
+        global DEVICE, HALF
         if DEVICE.type != "cpu" and "download" not in str(e).lower():
             print(f"[linework] {DEVICE} failed ({e}); falling back to CPU", file=sys.stderr)
-            DEVICE = torch.device("cpu")
+            DEVICE, HALF = torch.device("cpu"), False
             with _lock:
                 for k in list(_loaded):
-                    _loaded[k] = _loaded[k].to(DEVICE)
+                    _loaded[k] = _loaded[k].to(DEVICE).float()
             return _run(key, rgb, opts, progress)
         raise
+    finally:
+        if DEVICE.type == "mps":
+            torch.mps.empty_cache()  # give the GPU's cached memory back to macOS and other apps

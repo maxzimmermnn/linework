@@ -101,21 +101,27 @@ def test_tile_blend_weights_sum_to_one():
     assert np.allclose(acc, 1)
 
 
-def test_lineart_streamed_matches_untiled(monkeypatch):
+@pytest.mark.parametrize("half", [False, True])
+def test_lineart_streamed_matches_untiled(monkeypatch, half):
     import torch
 
     from linework.models import registry as R
     from linework.models.small_archs import LineartGenerator
 
+    if half and R.DEVICE.type != "mps":
+        pytest.skip("half precision is only used on Apple GPUs")
     torch.manual_seed(0)
     net = LineartGenerator(3, 1, 3).float().eval().to(R.DEVICE)  # random weights, no download
+    if half:
+        net = net.half()
     monkeypatch.setattr(R, "STREAM_TILE", 96)  # many tiles on a small image
     rgb = np.random.default_rng(0).integers(0, 255, (250, 330, 3), dtype=np.uint8)
     with torch.inference_mode():
         ref = R._infer("lineart", net, rgb)
         out = R._lineart_streamed(net, rgb)
     assert out.shape == ref.shape
-    assert np.abs(out - ref).max() < 1e-3
+    # float32: same numbers; half: norm statistics are summed in float32 on the CPU vs on the GPU
+    assert np.abs(out - ref).max() < (1e-2 if half else 1e-3)
 
 
 def test_export_formats_never_overwrite(tmp_path):
@@ -132,3 +138,38 @@ def test_export_formats_never_overwrite(tmp_path):
         assert len({a, b, c}) == 3 and all(x.exists() for x in (a, b, c))
     with pytest.raises(ValueError):
         export.save("svg", "photo.jpg", rgb, edges, {**p, "style": "soft"}, tmp_path)
+
+
+def test_watch_folder(tmp_path, monkeypatch):
+    import time
+
+    from PIL import Image
+
+    from linework import watch
+
+    monkeypatch.setattr(watch, "POLL", 0.1)
+    Image.fromarray(synthetic()).save(tmp_path / "old.jpg")  # there before the start: ignored
+    p = {**pp.DEFAULTS, "model": "canny", "detail": 256}
+    w = watch.Watcher(tmp_path, p, "png", on_event=lambda m: None).start()
+    try:
+        time.sleep(0.3)
+        Image.fromarray(synthetic()).save(tmp_path / "new.jpg")
+        (tmp_path / "broken.jpg").write_bytes(b"not an image")
+        deadline = time.time() + 10
+        while w.done + w.failed < 2 and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.5)  # a few more polls: the new drawing must not be picked up again
+    finally:
+        w.stop()
+    names = sorted(f.name for f in tmp_path.iterdir())
+    assert names == ["broken.jpg", "new.jpg", "new_lines_canny.png", "old.jpg"]
+    assert (w.done, w.failed) == (1, 1) and w.running is False
+
+
+def test_edge_cache_byte_limit():
+    c = detect.EdgeCache(size=10, max_bytes=3 * 4000)
+    for i in range(5):
+        c.put(i, np.zeros(1000, np.float32))  # 4000 bytes each
+    assert list(c.data) == [2, 3, 4]
+    c.put("big", np.zeros(10_000, np.float32))  # bigger than the budget on its own: still kept
+    assert list(c.data) == ["big"]

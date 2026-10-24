@@ -61,12 +61,15 @@ def _round_off(ink: np.ndarray, sigma: float, crisp: bool) -> np.ndarray:
     return ink
 
 
-def stylize(edges: np.ndarray, p: dict) -> np.ndarray:
-    """edges (detail res, 0..1) -> ink coverage map at SUPERSAMPLE x detail res."""
+def stylize(edges: np.ndarray, p: dict, scale: float = SUPERSAMPLE) -> np.ndarray:
+    """edges (detail res, 0..1) -> ink coverage map at scale x detail res.
+
+    Exports use SUPERSAMPLE. The live preview passes a smaller scale (>= 1) so it works at
+    about the size it is shown: same strokes, much less work at high Detail."""
     p = {**DEFAULTS, **p}
-    s = SUPERSAMPLE
+    s = scale
     h, w = edges.shape
-    e = cv2.resize(edges, (w * s, h * s), interpolation=cv2.INTER_CUBIC).clip(0, 1)
+    e = edges if s == 1 else cv2.resize(edges, (round(w * s), round(h * s)), interpolation=cv2.INTER_CUBIC).clip(0, 1)
 
     lo, hi = float(p["faint_cutoff"]), float(p["solid_at"])
     hi = max(hi, lo + 0.01)
