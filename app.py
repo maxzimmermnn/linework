@@ -194,7 +194,14 @@ CSS = """
 #title h1 {font-weight: 650; letter-spacing: -0.02em; margin-bottom: 0}
 #title p {opacity: .7; margin-top: 4px}
 #preview img {background: #fff}
-#result-col {position: sticky; top: 12px; align-self: flex-start}
+/* Keep the preview in view while the sliders scroll. Gradio's overflow: hidden on the container
+   turns it into a scroll box that disables sticky; clip cuts overflow the same way without that
+   (older WebKit ignores clip and keeps visible). z-index lifts the whole column above the left
+   column's labels (z-index up to 40), else they show through the fullscreen preview. */
+.gradio-container {overflow: visible !important; overflow: clip !important}
+#result-col {position: sticky; top: 12px; align-self: flex-start; z-index: 50;
+             max-height: calc(100vh - 24px); overflow-y: auto}
+#preview:not(.fullscreen) {height: max(320px, calc(100vh - 300px)) !important}
 #result-file {min-height: 0}
 .small-note {opacity: .75}
 footer {display: none !important}
