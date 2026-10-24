@@ -14,6 +14,8 @@ Linework turns a photo into line art that lines up 1:1 with the photo, for traci
 .venv/bin/python -m linework.cli photo.jpg --style pen --svg
 ```
 
+`./macos/build_app.sh` builds `dist/Linework.app`; its environment lives in `~/Library/Application Support/Linework`, its log in `~/Library/Logs/Linework.log` (see "Mac app" in DEVELOPMENT.md before touching `macos/` or `linework/desktop.py`).
+
 If a Linework instance is already running on 7860, Gradio picks the next free port; use `GRADIO_SERVER_PORT` and `LINEWORK_OUTPUT` (scratch folder) for test servers so the user's instance and output folder are untouched.
 
 ## Rules that are easy to break

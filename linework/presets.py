@@ -1,14 +1,15 @@
-"""Built-in starting points plus user presets saved as JSON in ./presets/."""
+"""Built-in starting points plus user presets saved as JSON in ./presets/ (or $LINEWORK_PRESETS)."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
 from .postprocess import DEFAULTS
 
-USER_DIR = Path(__file__).resolve().parents[1] / "presets"
+USER_DIR = Path(os.environ.get("LINEWORK_PRESETS", Path(__file__).resolve().parents[1] / "presets"))
 
 BUILTIN: dict[str, dict] = {
     "Default": {},

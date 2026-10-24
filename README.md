@@ -6,18 +6,27 @@ Built and tested on Apple Silicon Macs. It should also run on Linux and Windows 
 
 ## Start
 
-1. Download or clone this repository somewhere permanent (e.g. `~/Applications/Linework`).
-2. Double-click **start.command**.
-   - macOS may say it can't verify the file. Right-click it, choose **Open**, then **Open** again. Only needed the first time.
-   - The first start sets everything up (a few minutes, about 1 GB). Later starts take seconds.
-3. Your browser opens at `http://127.0.0.1:7860`. Close the Terminal window to quit.
+### As a Mac app (recommended)
+
+1. Download or clone this repository, open Terminal in its folder and run `./macos/build_app.sh`. This makes **Linework.app** in the `dist` folder.
+2. Drag **Linework.app** into **Applications**, and from there into the Dock if you like.
+3. Open it. The first start sets everything up (a few minutes, about 1 GB); a message says so and the window opens by itself when it is done. Later starts take a few seconds.
+4. Quit with **Cmd+Q** or by closing the window.
+
+Drawings are saved to **Pictures › Linework**. If you copy the app to another Mac, macOS may say it can't verify it: Control-click the app, choose **Open**, then **Open** again (on macOS 15 and later: **System Settings › Privacy & Security › Open Anyway**). Only needed the first time.
+
+To remove it completely, delete the app and the folder `~/Library/Application Support/Linework` (Python, models, presets, about 1 GB).
+
+### From the folder, in the browser
+
+Double-click **start.command** (first start: right-click, **Open**, **Open**). It sets up a Python environment in the folder the first time, then opens `http://127.0.0.1:7860` in your browser. Drawings go to the `output` folder. Close the Terminal window to quit.
 
 ## Use
 
 1. Drop a photo into **Photo** (JPG, PNG, TIFF, HEIC, WebP).
 2. Pick a **Preset** as a starting point, or a **Model**.
 3. Adjust sliders. The preview updates live. **Over photo** shows the lines on top of a faded photo so you can judge what got picked up.
-4. **Save full-size PNG**. Files go to the `output` folder (button opens it). Same pixel size as the photo by default, so it drops onto the photo in Photoshop perfectly aligned.
+4. **Save full-size PNG**. Files go to the output folder (**Open output folder** shows it). Same pixel size as the photo by default, so it drops onto the photo in Photoshop perfectly aligned.
 
 Tip: set **Output → Background → Transparent** and the PNG is just the lines, already a usable layer.
 
@@ -43,11 +52,11 @@ Tip: set **Output → Background → Transparent** and the PNG is just the lines
 | **Ignore texture** | Smooths skin, film grain, fabric before the model sees them. Keeps outlines. |
 | **Find lines in shadows** | Boosts local contrast first, useful for dark or flat photos. |
 
-Own presets: open **Save these settings as a preset**, give it a name. Saved in `presets/` as small JSON files.
+Own presets: open **Save these settings as a preset**, give it a name. Saved as small JSON files (in the app: `~/Library/Application Support/Linework/presets`, from the folder: `presets/`).
 
 ## Batch
 
-Open **Batch** under the result, drop many photos, **Process all**. Uses the current settings. You get a folder plus a zip in `output`.
+Open **Batch** under the result, drop many photos, choose **Save as** (PNG, PSD or SVG), **Process all**. Uses the current settings. You get a folder plus a zip in `output`. Nothing is ever overwritten: if a name is taken, the new file gets the time added to its name.
 
 From Terminal:
 

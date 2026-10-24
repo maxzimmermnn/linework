@@ -7,3 +7,4 @@ scikit-image>=0.23
 certifi
 pillow-heif>=0.16
 psd-tools>=1.10
+pywebview>=5.0; sys_platform == "darwin"

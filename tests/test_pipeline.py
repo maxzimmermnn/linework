@@ -116,3 +116,19 @@ def test_lineart_streamed_matches_untiled(monkeypatch):
         out = R._lineart_streamed(net, rgb)
     assert out.shape == ref.shape
     assert np.abs(out - ref).max() < 1e-3
+
+
+def test_export_formats_never_overwrite(tmp_path):
+    from linework import export
+
+    rgb = synthetic()
+    p = {**pp.DEFAULTS, "model": "canny", "detail": 256, "style": "hard"}
+    edges = detect.detect(rgb, p)
+    for fmt in export.FORMATS:
+        a, wh = export.save(fmt, "photo.jpg", rgb, edges, p, tmp_path)
+        b, _ = export.save(fmt, "photo.jpg", rgb, edges, p, tmp_path)
+        c, _ = export.save(fmt, "photo.jpg", rgb, edges, p, tmp_path)
+        assert a.name == f"photo_lines_canny.{fmt}" and wh == (400, 300)
+        assert len({a, b, c}) == 3 and all(x.exists() for x in (a, b, c))
+    with pytest.raises(ValueError):
+        export.save("svg", "photo.jpg", rgb, edges, {**p, "style": "soft"}, tmp_path)

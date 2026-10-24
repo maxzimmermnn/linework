@@ -13,9 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from PIL import Image
-
-from . import detect, layered, postprocess, presets, vector
+from . import detect, export, postprocess, presets
 from .models import registry
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp", ".heic", ".heif"}
@@ -37,21 +35,7 @@ def expand(inputs: list[str]) -> list[Path]:
 def process_file(path: Path, params: dict, out_dir: Path | None, fmt: str = "png") -> Path:
     rgb = detect.load_image(path)
     edges = detect.detect(rgb, params)
-    dest = (out_dir or path.parent) / detect.output_name(path, params["model"])
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if fmt == "svg":
-        dest = dest.with_suffix(".svg")
-        wh = postprocess.output_wh(rgb, edges, params["output_size"])
-        svg = vector.to_svg(postprocess.stylize(edges, params), wh, params, detect.image_info(path)["dpi"])
-        dest.write_text(svg, encoding="utf-8")
-        return dest
-    if fmt == "psd":
-        dest = dest.with_suffix(".psd")
-        layered.to_psd(rgb, edges, params, **detect.image_info(path)).save(dest)
-        return dest
-    img, _ = postprocess.render(rgb, edges, params)
-    Image.fromarray(img).save(dest, optimize=False, compress_level=4)
-    return dest
+    return export.save(fmt, path, rgb, edges, params, out_dir or path.parent)[0]
 
 
 def main(argv=None):
@@ -80,14 +64,17 @@ def main(argv=None):
     if a.detail_size:
         params["output_size"] = "detail"
 
-    if a.svg and params["style"] == "soft":
-        ap.error("--svg needs --style hard or pen (SVG has no grey tones)")
+    fmt = "svg" if a.svg else "psd" if a.psd else "png"
+    try:
+        export.check(fmt, params)
+    except ValueError as e:
+        ap.error(str(e))
 
     files = expand(a.inputs)
     out_dir = Path(a.out).expanduser() if a.out else None
     print(f"{len(files)} image(s), model={params['model']}, device={registry.DEVICE}")
     for i, f in enumerate(files, 1):
-        dest = process_file(f, params, out_dir, "svg" if a.svg else "psd" if a.psd else "png")
+        dest = process_file(f, params, out_dir, fmt)
         print(f"[{i}/{len(files)}] {f.name} -> {dest}")
 
 

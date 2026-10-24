@@ -6,7 +6,6 @@ Start with ./start.command (macOS double-click) or `python app.py`.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -16,9 +15,9 @@ from pathlib import Path
 
 import gradio as gr
 import numpy as np
-from PIL import Image
 
-from linework import detect, layered, postprocess, presets, vector
+from linework import detect, postprocess, presets
+from linework import export as exporter
 from linework.models import registry
 
 ROOT = Path(__file__).resolve().parent
@@ -112,68 +111,44 @@ def preview(path, view, *values, progress=gr.Progress()):
     return img, info
 
 
-def export(path, *values, progress=gr.Progress()):
+def _export(fmt, path, values, progress, desc, note=""):
     if not path:
         raise gr.Error("Add a photo first.")
     p = params_from(values)
     rgb, edges = _edges(path, p, progress)
-    progress(0.6, desc="Rendering full size")
-    img, _ = postprocess.render(rgb, edges, p)
-    dest = _new_dest(path, p, ".png")
-    Image.fromarray(img).save(dest, compress_level=4)
-    h, w = img.shape[:2]
-    return gr.update(value=str(dest), visible=True), f"Saved **{dest.name}** ({w}×{h}) in the output folder."
+    progress(0.6, desc=desc)
+    dest, (w, h) = exporter.save(fmt, path, rgb, edges, p, OUT_DIR)
+    return gr.update(value=str(dest), visible=True), f"Saved **{dest.name}** ({w}×{h}{note}) in the output folder."
+
+
+def export(path, *values, progress=gr.Progress()):
+    return _export("png", path, values, progress, "Rendering full size")
 
 
 def export_svg(path, *values, progress=gr.Progress()):
-    if not path:
-        raise gr.Error("Add a photo first.")
-    p = params_from(values)
-    rgb, edges = _edges(path, p, progress)
-    progress(0.6, desc="Tracing lines")
-    w, h = postprocess.output_wh(rgb, edges, p["output_size"])
-    svg = vector.to_svg(postprocess.stylize(edges, p), (w, h), p, detect.image_info(path)["dpi"])
-    dest = _new_dest(path, p, ".svg")
-    dest.write_text(svg, encoding="utf-8")
-    return gr.update(value=str(dest), visible=True), f"Saved **{dest.name}** ({w}×{h}) in the output folder."
+    return _export("svg", path, values, progress, "Tracing lines")
 
 
 def export_psd(path, *values, progress=gr.Progress()):
-    if not path:
-        raise gr.Error("Add a photo first.")
-    p = params_from(values)
-    rgb, edges = _edges(path, p, progress)
-    progress(0.6, desc="Building layers")
-    psd = layered.to_psd(rgb, edges, p, **detect.image_info(path))
-    dest = _new_dest(path, p, ".psd")
-    psd.save(dest)
-    return gr.update(value=str(dest), visible=True), f"Saved **{dest.name}** (photo + lines as layers) in the output folder."
+    return _export("psd", path, values, progress, "Building layers", ", photo and lines as layers")
 
 
-def _new_dest(path, p, ext) -> Path:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    dest = (OUT_DIR / detect.output_name(path, p["model"])).with_suffix(ext)
-    if dest.exists():  # never overwrite earlier versions
-        dest = dest.with_name(f"{dest.stem}_{time.strftime('%H%M%S')}{ext}")
-    return dest
-
-
-def batch(files, *values, progress=gr.Progress()):
+def batch(files, fmt, *values, progress=gr.Progress()):
     if not files:
         raise gr.Error("Add some photos to the batch first.")
     p = params_from(values)
+    try:
+        exporter.check(fmt, p)
+    except ValueError as e:
+        raise gr.Error(str(e)) from e
     folder = OUT_DIR / f"batch_{time.strftime('%Y-%m-%d_%H%M%S')}"
-    folder.mkdir(parents=True, exist_ok=True)
     done = []
     for i, f in enumerate(files):
         src = f if isinstance(f, str) else f.name
         progress(i / len(files), desc=f"{Path(src).name} ({i + 1}/{len(files)})")
         rgb, img_id = load_photo(src)
         edges = detect.detect(rgb, p, img_id=img_id)
-        img, _ = postprocess.render(rgb, edges, p)
-        dest = folder / detect.output_name(src, p["model"])
-        Image.fromarray(img).save(dest, compress_level=4)
-        done.append(dest)
+        done.append(exporter.save(fmt, src, rgb, edges, p, folder)[0])
     zpath = folder.with_suffix(".zip")
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_STORED) as z:
         for d in done:
@@ -317,6 +292,8 @@ def build():
                 status = gr.Markdown()
                 with gr.Accordion("Batch: same settings on many photos", open=False):
                     batch_files = gr.File(file_count="multiple", file_types=["image"], label="Photos")
+                    batch_fmt = gr.Radio([("PNG", "png"), ("PSD (photo + lines)", "psd"),
+                                          ("SVG (Hard and Pen ink styles)", "svg")], value="png", label="Save as")
                     batch_btn = gr.Button("Process all")
                     batch_out = gr.File(label="Zip of all drawings", interactive=False, visible=False)
 
@@ -338,16 +315,24 @@ def build():
         svg_btn.click(export_svg, [photo] + controls, [result_file, status])
         psd_btn.click(export_psd, [photo] + controls, [result_file, status])
         folder_btn.click(open_output_folder, None, status)
-        batch_btn.click(batch, [batch_files] + controls, [batch_out, status])
+        batch_btn.click(batch, [batch_files, batch_fmt] + controls, [batch_out, status])
     return demo
 
 
-if __name__ == "__main__":
-    print(f"Linework · device: {registry.DEVICE} · weights: {registry.WEIGHTS_DIR}")
-    build().queue(default_concurrency_limit=1).launch(
+def launch(block: bool = True) -> str:
+    """Start the local server. block=False returns its URL right away (desktop window mode)."""
+    print(f"Linework · device: {registry.DEVICE} · weights: {registry.WEIGHTS_DIR} · output: {OUT_DIR}")
+    demo = build().queue(default_concurrency_limit=1)
+    demo.launch(
         server_name="127.0.0.1",
-        inbrowser=os.environ.get("LINEWORK_NO_BROWSER") != "1",
+        inbrowser=block and os.environ.get("LINEWORK_NO_BROWSER") != "1",
+        prevent_thread_lock=not block,
         allowed_paths=[str(OUT_DIR)],
         theme=make_theme(),
         css=CSS,
     )
+    return demo.local_url
+
+
+if __name__ == "__main__":
+    launch()
