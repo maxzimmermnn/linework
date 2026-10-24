@@ -1,0 +1,9 @@
+torch>=2.3
+gradio>=6.0,<7
+numpy>=1.26
+opencv-python-headless>=4.9
+pillow>=10.3
+scikit-image>=0.23
+certifi
+pillow-heif>=0.16
+psd-tools>=1.10

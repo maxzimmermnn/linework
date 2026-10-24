@@ -1,0 +1,8 @@
+.venv/
+weights/
+output/
+presets/
+__pycache__/
+.pytest_cache/
+*.part
+.DS_Store
