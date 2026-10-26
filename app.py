@@ -31,7 +31,7 @@ MODEL_CHOICES = [(m.label, k) for k, m in M.items()]
 PARAM_KEYS = [
     "model", "detail", "texture_smoothing", "local_contrast", "canny_low", "canny_high",
     "faint_cutoff", "solid_at", "darkness", "style", "threshold", "close_gaps", "despeckle",
-    "line_weight", "pen_width", "smoothing", "output_size", "background", "line_color",
+    "line_weight", "pen_width", "smoothing", "output_size", "background", "line_color", "shadow_level",
 ]
 
 
@@ -236,6 +236,7 @@ def visibility(model, style):
         gr.update(visible=style != "pen"),             # line_weight
         gr.update(visible=style == "pen"),             # pen_width
         gr.update(visible=model == "canny"),           # canny group
+        gr.update(visible=model == "xdog"),            # shadow level
         gr.update(visible=style in ("hard", "pen")),   # svg button
         model_note(model),
     )
@@ -293,6 +294,8 @@ def build():
                 detail = gr.Slider(256, registry.MAX_DETAIL, D["detail"], step=64, label="Detail",
                                    info="Resolution the model looks at. Higher = finer, more lines. Lower = bolder, simpler. "
                                         "High values take several seconds per change.")
+                shadow_level = gr.Slider(0.2, 0.9, D["shadow_level"], step=0.01, label="Shadow level",
+                                         info="Higher = more of the picture turns black.", visible=False)
 
                 with gr.Accordion("Lines", open=True):
                     faint_cutoff = gr.Slider(0, 0.9, D["faint_cutoff"], step=0.01, label="Ignore faint lines",
@@ -372,7 +375,7 @@ def build():
 
         controls = [model, detail, texture_smoothing, local_contrast, canny_low, canny_high,
                     faint_cutoff, solid_at, darkness, style, threshold, close_gaps, despeckle,
-                    line_weight, pen_width, smoothing, output_size, background, line_color]
+                    line_weight, pen_width, smoothing, output_size, background, line_color, shadow_level]
         assert len(controls) == len(PARAM_KEYS)
 
         gr.on(
@@ -381,7 +384,7 @@ def build():
             trigger_mode="always_last", show_progress="minimal",
         )
         gr.on([model.change, style.change], visibility, [model, style],
-              [threshold, line_weight, pen_width, canny_group, svg_btn, note])
+              [threshold, line_weight, pen_width, canny_group, shadow_level, svg_btn, note])
         preset.change(apply_preset, preset, controls)
         save_btn.click(save_preset, [preset_name] + controls, [preset, status])
         export_btn.click(export, [photo] + controls, [result_file, status])

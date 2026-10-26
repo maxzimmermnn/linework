@@ -15,6 +15,9 @@ import sys
 import warnings
 
 warnings.filterwarnings("ignore", message=r".*torch\.jit.*")
+import json
+import logging
+import struct
 import threading
 import urllib.request
 from dataclasses import dataclass, field
@@ -24,6 +27,8 @@ from typing import Callable
 import cv2
 import numpy as np
 import torch
+
+logging.getLogger("dinov2").setLevel(logging.ERROR)  # vendored DINOv2: "xFormers not available"
 
 WEIGHTS_DIR = Path(os.environ.get("LINEWORK_WEIGHTS", Path(__file__).resolve().parents[2] / "weights"))
 
@@ -55,6 +60,14 @@ MODELS: dict[str, ModelInfo] = {
             "sk_model2.pth", [f"{HF}/lllyasviel/Annotators/resolve/main/sk_model2.pth"], 17,
         ),
         ModelInfo(
+            "contour", "Contour",
+            "Bold, even outlines like a hand inked contour drawing. Clean on faces and objects, busy on foliage.",
+            "contour.safetensors", [
+                f"{HF}/OzzyGT/contour/resolve/main/contour.safetensors",
+                f"{HF}/spaces/njsaunders/informativedrawings/resolve/main/contour.pth",
+            ], 17,
+        ),
+        ModelInfo(
             "anyline", "Anyline (MistoLine TEED)",
             "TEED retrained for line art (the Anyline ComfyUI node). Crisp contours plus inner detail.",
             "MTEED.pth", [f"{HF}/TheMistoAI/MistoLine/resolve/main/Anyline/MTEED.pth"], 0.3,
@@ -81,8 +94,19 @@ MODELS: dict[str, ModelInfo] = {
             "ControlNetHED.pth", [f"{HF}/lllyasviel/Annotators/resolve/main/ControlNetHED.pth"], 29,
         ),
         ModelInfo(
+            "depth", "Depth outlines",
+            "Only the outer shapes of people and objects, found from depth. Ignores texture, light and "
+            "patterns. Little to see in close-ups and flat scenes.",
+            "depth_anything_v2_vits.pth",
+            [f"{HF}/depth-anything/Depth-Anything-V2-Small/resolve/main/depth_anything_v2_vits.pth"], 99,
+        ),
+        ModelInfo(
             "lineart_standard", "Lineart standard (no AI)",
             "Classic filter that traces every dark line. Very detailed, instant, no download.",
+        ),
+        ModelInfo(
+            "xdog", "Shadow shapes (no AI)",
+            "Flat black shadow shapes, like a woodcut or stencil, for blocking in the darks. Instant, no download.",
         ),
         ModelInfo(
             "canny", "Canny (no AI)",
@@ -92,6 +116,8 @@ MODELS: dict[str, ModelInfo] = {
 }
 
 DEFAULT_MODEL = "lineart"
+FILTERS = ("canny", "lineart_standard", "xdog")      # classic image filters, no network
+LINEART = ("lineart", "lineart_coarse", "contour")   # Informative Drawings generator, three trained styles
 
 
 # ------------------------------------------------------------------ device --
@@ -179,18 +205,35 @@ _loaded: dict[str, torch.nn.Module] = {}
 _lock = threading.Lock()
 
 
-def _torch_load(path: Path):
-    return torch.load(path, map_location="cpu", weights_only=True)
+_SAFETENSORS_DTYPES = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16,
+                       "I64": torch.int64, "I32": torch.int32, "U8": torch.uint8}
+
+
+def _torch_load(path: Path) -> dict:
+    """State dict from a PyTorch checkpoint or a .safetensors file (told apart by content, so
+    mirrors in either format can share a file name). Neither path can run code from the file."""
+    raw = path.read_bytes()
+    if raw[8:9] != b"{":
+        return torch.load(path, map_location="cpu", weights_only=True)
+    n = struct.unpack("<Q", raw[:8])[0]  # safetensors: header length, JSON header, raw tensors
+    header, base = json.loads(raw[8 : 8 + n]), 8 + n
+    out = {}
+    for k, v in header.items():
+        if k != "__metadata__":
+            a, b = v["data_offsets"]
+            t = torch.frombuffer(bytearray(raw[base + a : base + b]), dtype=_SAFETENSORS_DTYPES[v["dtype"]])
+            out[k] = t.reshape(v["shape"])
+    return out
 
 
 def load(key: str, progress=None) -> torch.nn.Module | None:
-    if key in ("canny", "lineart_standard"):
+    if key in FILTERS:
         return None
     with _lock:
         if key in _loaded:
             return _loaded[key]
         path = download(key, progress)
-        if key in ("lineart", "lineart_coarse"):
+        if key in LINEART:
             from .small_archs import LineartGenerator
 
             net = LineartGenerator(3, 1, 3)
@@ -204,6 +247,11 @@ def load(key: str, progress=None) -> torch.nn.Module | None:
             from .teed.ted import TED
 
             net = TED()
+            net.load_state_dict(_torch_load(path))
+        elif key == "depth":
+            from .depth_anything_v2.dpt import DepthAnythingV2
+
+            net = DepthAnythingV2(encoder="vits", features=64, out_channels=[48, 96, 192, 384])
             net.load_state_dict(_torch_load(path))
         elif key == "pidinet":
             from .pidinet_arch import pidinet
@@ -255,7 +303,7 @@ def _infer(key: str, net, rgb: np.ndarray) -> np.ndarray:
     """One network pass on rgb (uint8 HxWx3, any size) -> float32 HxW, 1 = line, before haze lifting."""
     img, h, w = _pad_to(rgb, 64)
     dt = _dtype(net)
-    if key in ("lineart", "lineart_coarse"):  # network draws white paper (1) with black ink (0)
+    if key in LINEART:  # network draws white paper (1) with black ink (0)
         out = net(_to_tensor(img, dt) / 255.0)[0, 0].float().cpu().numpy()[:h, :w]
         return (1.0 - out).clip(0, 1).astype(np.float32)
     if key in ("hed", "teed", "anyline"):
@@ -399,6 +447,51 @@ def _lineart_streamed(net, rgb: np.ndarray, progress=None) -> np.ndarray:
     return (1.0 - out).clip(0, 1).astype(np.float32)
 
 
+# ------------------------------------------------------------ depth outlines --
+DEPTH_RES = 770  # short side the depth network sees, whatever the Detail (it works on the whole image)
+_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+_STD = np.array([0.229, 0.224, 0.225], np.float32)
+
+
+def _thin(g: np.ndarray, gx: np.ndarray, gy: np.ndarray) -> np.ndarray:
+    """Non-maximum suppression: keep only the crest of each edge across its gradient direction."""
+    ang = (np.rad2deg(np.arctan2(gy, gx)) + 180) % 180
+    out = np.zeros_like(g)
+    for lo, hi, dy, dx in [(0, 22.5, 0, 1), (157.5, 180, 0, 1), (22.5, 67.5, 1, 1), (67.5, 112.5, 1, 0), (112.5, 157.5, 1, -1)]:
+        m = (ang >= lo) & (ang < hi) & (g >= np.roll(g, (dy, dx), (0, 1))) & (g >= np.roll(g, (-dy, -dx), (0, 1)))
+        out[m] = g[m]
+    return out
+
+
+def _depth_outlines(net, rgb: np.ndarray) -> np.ndarray:
+    """Depth Anything V2 depth -> lines where the depth jumps (silhouettes, overlaps)."""
+    h, w = rgb.shape[:2]
+    s = DEPTH_RES / min(h, w)
+    x = cv2.resize(rgb, (max(14, round(w * s / 14) * 14), max(14, round(h * s / 14) * 14)),
+                   interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_CUBIC)
+    t = torch.from_numpy(((x / 255.0 - _MEAN) / _STD).astype(np.float32).transpose(2, 0, 1))[None]
+    d = net(t.to(DEVICE, _dtype(net)))[0].float().cpu().numpy()
+    d = cv2.resize(d, (w, h), interpolation=cv2.INTER_CUBIC)
+    d = (d - d.min()) / (d.max() - d.min() + 1e-6)  # relative inverse depth, 1 = near
+    gx, gy = cv2.Sobel(d, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(d, cv2.CV_32F, 0, 1, ksize=3)
+    # Relative jump per 1/1000 of the image: the same lines at any Detail, distant edges count too.
+    # Silhouettes measure ~1-6, flat surfaces ~0.01-0.04.
+    g = np.hypot(gx, gy) / (d + 0.05) * (min(h, w) / 1000)
+    g = np.minimum(_thin(cv2.GaussianBlur(g, (0, 0), 1.0), gx, gy), 1.0)
+    g = cv2.dilate(g, np.ones((3, 3), np.uint8))  # 1 px crest -> a stroke of ~2-3 px
+    return cv2.GaussianBlur(g, (0, 0), 0.7).clip(0, 1).astype(np.float32)
+
+
+def _shadow_shapes(rgb: np.ndarray, level: float) -> np.ndarray:
+    """XDoG (Winnemoeller et al. 2012): sharpened difference of Gaussians with a soft threshold.
+    Everything darker than `level` becomes ink; higher level = more black."""
+    g = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255
+    sigma, k, p, phi = 0.8, 1.6, 20.0, 10.0
+    s = (1 + p) * cv2.GaussianBlur(g, (0, 0), sigma) - p * cv2.GaussianBlur(g, (0, 0), sigma * k)
+    paper = np.where(s >= level, 1.0, 1 + np.tanh(phi * (s - level)))
+    return (1 - paper).clip(0, 1).astype(np.float32)
+
+
 @torch.inference_mode()
 def _run(key: str, rgb: np.ndarray, opts: dict, progress=None) -> np.ndarray:
     """rgb: uint8 HxWx3 at detection resolution. Returns float32 HxW edge map."""
@@ -416,13 +509,18 @@ def _run(key: str, rgb: np.ndarray, opts: dict, progress=None) -> np.ndarray:
         inten /= max(16.0, float(np.median(nz)) if nz.size else 16.0)
         return (inten * 0.6).clip(0, 1).astype(np.float32)
 
+    if key == "xdog":
+        return _shadow_shapes(rgb, float(opts.get("shadow_level", 0.5)))
+
     net = load(key, progress)
+    if key == "depth":
+        return _depth_outlines(net, rgb)
     tiled = opts.get("tiled")
     if tiled is None:
         tiled = rgb.shape[0] * rgb.shape[1] > TILE_ABOVE
     if not tiled:
         e = _infer(key, net, rgb)
-    elif key in ("lineart", "lineart_coarse"):
+    elif key in LINEART:
         e = _lineart_streamed(net, rgb, progress)
     else:
         e = _infer_tiled(key, net, rgb, progress)

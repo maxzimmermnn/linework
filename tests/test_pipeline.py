@@ -173,3 +173,51 @@ def test_edge_cache_byte_limit():
     assert list(c.data) == [2, 3, 4]
     c.put("big", np.zeros(10_000, np.float32))  # bigger than the budget on its own: still kept
     assert list(c.data) == ["big"]
+
+
+def test_shadow_shapes_inks_dark_areas():
+    p = {**pp.DEFAULTS, "model": "xdog", "detail": 256}
+    ink = detect.detect(synthetic(), p)  # dark rectangle on light paper
+    assert ink[150, 200] > 0.9 and ink[20, 20] < 0.1
+    darker = detect.detect(synthetic(), {**p, "shadow_level": 0.9})
+    assert darker.mean() > ink.mean()  # higher level = more black, and it is part of the cache key
+
+
+def test_depth_outlines_trace_depth_jumps():
+    import torch
+
+    from linework.models import registry as R
+
+    class FakeDepth(torch.nn.Module):  # a near square in front of a far wall, no download
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1))
+
+        def forward(self, x):
+            d = torch.full(x.shape[-2:], 0.1, device=x.device)
+            h, w = d.shape
+            d[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4] = 1.0
+            return d[None] + self.w
+
+    rgb = np.full((280, 420, 3), 128, np.uint8)
+    with torch.inference_mode():
+        e = R._depth_outlines(FakeDepth().to(R.DEVICE), rgb)
+    assert e.shape == (280, 420)
+    assert e[70, 210] > 0.5 and e[140, 105] > 0.5  # top and left edges of the square
+    assert e[140, 210] < 0.05 and e[20, 20] < 0.05  # flat inside and outside
+
+
+def test_safetensors_loader(tmp_path):
+    import json
+    import struct
+
+    import torch
+
+    from linework.models import registry as R
+
+    a = np.arange(6, dtype=np.float32).reshape(2, 3)
+    header = json.dumps({"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, a.nbytes]}}).encode()
+    (tmp_path / "m.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + a.tobytes())
+    torch.save({"w": torch.from_numpy(a)}, tmp_path / "m.pth")
+    for f in ("m.safetensors", "m.pth"):
+        assert np.array_equal(R._torch_load(tmp_path / f)["w"].numpy(), a)

@@ -38,7 +38,7 @@ Tip: set **Output → Background → Transparent** and the PNG is just the lines
 
 | Control | What it does |
 |---|---|
-| **Model** | The "eye". Lineart = closest to hand inking. Coarse = bolder and simpler. Anyline/TEED = crisp thin contours. PiDiNet = only the main contours. HED = soft and painterly. Lineart standard / Canny = classic filters, no AI. |
+| **Model** | The "eye". Lineart = closest to hand inking. Coarse = bolder and simpler, sketchy. Contour = bold, even outlines like a contour drawing. Anyline/TEED = crisp thin contours. PiDiNet = only the main contours. HED = soft and painterly. Depth outlines = only the outer shapes of people and objects, ignoring texture and light. Lineart standard / Canny = classic filters. Shadow shapes = flat black shadow masses like a woodcut, for blocking in the darks (set with **Shadow level**). The last three need no AI and no download. |
 | **Detail** | How big the image is when the model looks at it. Higher = finer lines and more of them. Lower = fewer, bolder lines. The single most important slider. Goes up to 4096 for very large photos (3072 on Macs with less than 24 GB of memory); high values take several seconds per change. |
 | **Ignore faint lines** | Drops weak edges. Raise it when there is too much noise. |
 | **Fully black from** | Edges stronger than this become solid black. |

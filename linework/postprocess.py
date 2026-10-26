@@ -20,6 +20,7 @@ DEFAULTS = {
     "local_contrast": 0.0,      # 0..4 CLAHE before detection
     "canny_low": 80,
     "canny_high": 180,
+    "shadow_level": 0.5,        # 0.2..0.9 Shadow shapes: higher = more black
     # stage 2 (styling)
     "faint_cutoff": 0.15,       # 0..0.9  edges weaker than this disappear
     "solid_at": 0.75,           # 0.1..1  edges stronger than this are fully black

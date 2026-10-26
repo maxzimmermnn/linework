@@ -40,6 +40,7 @@ linework/
     registry.py            model catalogue, download with mirrors, loading, device, inference, tiling
     small_archs.py         Lineart generator, HED          (vendored, see THIRD_PARTY_NOTICES.md)
     teed/, pidinet_arch.py TEED / Anyline, PiDiNet networks (vendored)
+    depth_anything_v2/     Depth Anything V2 (DINOv2 + DPT), used by "Depth outlines" (vendored)
 tests/test_pipeline.py
 weights/ output/ presets/  created at runtime, gitignored
 ```
@@ -52,6 +53,13 @@ Two stages so sliders feel instant:
 2. **Stylize** (fast). Upsampled 2x (`SUPERSAMPLE`) for anti-aliased strokes, then levels (`faint_cutoff`, `solid_at`), gamma (`darkness`), style (`soft` grey / `hard` threshold / `pen` = skeletonize, then redraw at a fixed radius), `close_gaps`, `despeckle` (area normalised to a 1000 px short side), `line_weight`, `smoothing`. Then resized to the output size (photo size by default) and composed onto white or transparent.
 
 All pixel-valued sliders are in detail-resolution pixels, so preview and export match. The preview is only downscaled for display.
+
+Models in brief:
+
+- `LINEART` family (one generator, three trained styles of Informative Drawings): `lineart` = the "anime" style checkpoint (ControlNet ships it as sk_model.pth "realistic"), `lineart_coarse` = "opensketch", `contour` = "contour". All share inference, tiling (`_lineart_streamed`) and half precision.
+- `depth`: Depth Anything V2 Small sees the whole photo at `DEPTH_RES` (770 px short side) regardless of Detail, so it never tiles. `_depth_outlines` turns the relative depth into lines where it jumps: gradient divided by depth (relative jump, so distant edges count), scaled per 1/1000 of the image (same result at any Detail), thinned by non-maximum suppression and widened to a 2-3 px stroke. Silhouettes score ~1-6, flat surfaces ~0.01-0.04. Close-ups and photos of flat things give little, by design.
+- `FILTERS` (no network): `canny`, `lineart_standard`, and `xdog` ("Shadow shapes", XDoG by Winnemoeller et al.) whose `shadow_level` slider is a stage 1 parameter (in `DETECT_KEYS`, cache-keyed only for xdog, like Canny's thresholds).
+- `_torch_load` reads PyTorch checkpoints and safetensors (told apart by content, so mirrors can mix formats) without executing anything from the file.
 
 Model outputs are normalised so one set of defaults works everywhere: Lineart networks draw 1 = paper, so `_infer` inverts them; TEED, Anyline and HED leave a grey haze that `_lift_haze` removes (5th percentile floor).
 
@@ -119,4 +127,4 @@ Not verified: `start.command` on a clean machine (venv creation, Gatekeeper prom
 ## Roadmap
 
 - Tune `presets.py` and `postprocess.DEFAULTS` on real photos, ideally against a hand-traced reference.
-- Optional extra models (Lineart Anime, DexiNed, a manga line model) if a different look is needed.
+- More models only if a different look is needed. Added so far: Contour, Depth outlines, Shadow shapes. Ruled out: OpenSketch (already Lineart coarse), Lineart Anime (already the default Lineart), DexiNed (TEED is its successor), anime/manga line models (not wanted).

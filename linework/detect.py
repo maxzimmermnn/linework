@@ -23,7 +23,7 @@ except Exception:
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp", ".heic", ".heif"}
 
 # Parameters that change the model output (anything else is post-processing).
-DETECT_KEYS = ("model", "detail", "texture_smoothing", "local_contrast", "canny_low", "canny_high")
+DETECT_KEYS = ("model", "detail", "texture_smoothing", "local_contrast", "canny_low", "canny_high", "shadow_level")
 
 
 def load_image(path_or_img) -> np.ndarray:
@@ -90,6 +90,8 @@ class EdgeCache:
         sub = {k: p.get(k) for k in DETECT_KEYS}
         if p.get("model") != "canny":
             sub.pop("canny_low"), sub.pop("canny_high")
+        if p.get("model") != "xdog":
+            sub.pop("shadow_level")
         return image_id + repr(sorted(sub.items()))
 
     def get(self, k):
