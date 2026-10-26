@@ -122,9 +122,9 @@ Checked on this setup: first start from scratch, relaunch after setup, Dock iden
 
 Verified on an Apple Silicon Mac: all six downloadable models load and run on MPS; tiled output is identical to untiled for every model; PNG/SVG/PSD export from the UI, Batch and CLI; the watch folder in the UI, the app (writing to `~/Pictures`) and the CLI; PSD and SVG in Photoshop 2026.
 
-Not verified: `start.command` on a clean machine (venv creation, Gatekeeper prompt); SVG in Illustrator; presets were tuned on small test images and still need tuning on real 20+ MP photos.
+Not verified: `start.command` on a clean machine (venv creation, Gatekeeper prompt); SVG in Illustrator; presets were tuned on small test images and still need tuning on real 20+ MP photos (except "Lots of texture", tuned on 3500-3800 px photos).
 
 ## Roadmap
 
 - Tune `presets.py` and `postprocess.DEFAULTS` on real photos, ideally against a hand-traced reference.
-- More models only if a different look is needed. Added so far: Contour, Depth outlines, Shadow shapes. Ruled out: OpenSketch (already Lineart coarse), Lineart Anime (already the default Lineart), DexiNed (TEED is its successor), anime/manga line models (not wanted).
+- More models only if a different look is needed. Added so far: Contour, Depth outlines, Shadow shapes. Ruled out: OpenSketch (already Lineart coarse), Lineart Anime (already the default Lineart), DexiNed (tested on large photos: less texture than Lineart or Anyline; the "Lots of texture" preset covers that look), anime/manga line models (not wanted).

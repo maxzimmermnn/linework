@@ -21,6 +21,10 @@ BUILTIN: dict[str, dict] = {
         "model": "lineart", "detail": 1536, "faint_cutoff": 0.12, "solid_at": 0.65,
         "darkness": 1.3, "style": "soft", "despeckle": 60,
     },
+    "Lots of texture": {  # tuned on 3500-3800 px photos (fur, wood grain, skin, brick)
+        "model": "lineart", "detail": 2048, "local_contrast": 3.0, "faint_cutoff": 0.05, "solid_at": 0.5,
+        "darkness": 1.4, "style": "soft", "despeckle": 20,
+    },
     "Bold & simple": {
         "model": "lineart_coarse", "detail": 640, "texture_smoothing": 4, "faint_cutoff": 0.3,
         "style": "pen", "threshold": 0.4, "despeckle": 400, "pen_width": 2.5, "smoothing": 1.0,
